@@ -90,7 +90,7 @@ export function SettingsDialog({
                       variant="danger"
                       onClick={() => {
                         void resetEmployeePassword({ data: account.userId })
-                          .then(() => {
+                          .then((reset) => {
                             setResetFor("");
                             setNotice(`${account.name} temporary password: ${reset.password}. Share it privately and ask them to change it after signing in.`);
                           })
