@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { MoneyField } from "@/components/money-field";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { createEmployeeAccount, DEFAULT_STAFF_PASSWORD } from "@/lib/centre.functions";
+import { createEmployeeAccount } from "@/lib/centre.functions";
 import { DESK_LABEL, deskOf } from "@/lib/ledger/calc";
 import { useLedger } from "@/lib/ledger/store";
 import type { Desk, Employee } from "@/lib/ledger/types";
@@ -21,7 +21,7 @@ export function StaffDialog({
   const saveEmployee = useLedger((state) => state.saveEmployee);
   const [draft, setDraft] = useState<Employee>(() => employee ?? fresh());
   const [username, setUsername] = useState("");
-  const [password, setPassword] = useState(DEFAULT_STAFF_PASSWORD);
+  const [password, setPassword] = useState("");
   const [usernameEdited, setUsernameEdited] = useState(false);
   const [pending, setPending] = useState(false);
 
@@ -29,7 +29,7 @@ export function StaffDialog({
     if (open) {
       setDraft(employee ? { ...employee, desk: employee.desk ?? deskOf(employee) } : fresh());
       setUsername("");
-      setPassword(DEFAULT_STAFF_PASSWORD);
+      setPassword("");
       setUsernameEdited(false);
       setPending(false);
     }
@@ -78,8 +78,7 @@ export function StaffDialog({
           void createEmployeeAccount({ data: { name, username: login, password } })
             .then(() => {
               save();
-              const starter = password === DEFAULT_STAFF_PASSWORD ? ` Starting password is ${DEFAULT_STAFF_PASSWORD}.` : "";
-              onResult({ ok: true, message: `${name} successfully added. Sign-in is ${login}.${starter}` });
+              onResult({ ok: true, message: `${name} successfully added. Sign-in is ${login}.` });
             })
             .catch((error: unknown) => {
               setPending(false);
