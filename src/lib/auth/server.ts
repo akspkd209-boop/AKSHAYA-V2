@@ -129,6 +129,26 @@ const trustedOrigins: string[] = explicitBaseURL
 
 const databaseUrl = env("DATABASE_URL");
 
+// Never let a production deployment silently use preview OAuth credentials,
+// an ephemeral signing secret, or an embedded database. These values must be
+// provisioned specifically for this V2 deployment.
+if (process.env.NODE_ENV === "production") {
+  const missing = [
+    ["VITE_AUTH_ENABLED", env("VITE_AUTH_ENABLED") === "true"],
+    ["BETTER_AUTH_URL", Boolean(explicitBaseURL)],
+    ["BETTER_AUTH_SECRET", Boolean(env("BETTER_AUTH_SECRET"))],
+    ["DATABASE_URL", Boolean(databaseUrl)],
+    ["GROK_AUTH_ISSUER", Boolean(env("GROK_AUTH_ISSUER"))],
+    ["GROK_AUTH_CLIENT_ID", Boolean(env("GROK_AUTH_CLIENT_ID"))],
+    ["GROK_AUTH_CLIENT_SECRET", Boolean(env("GROK_AUTH_CLIENT_SECRET"))],
+  ].filter(([, configured]) => !configured).map(([name]) => name);
+  if (missing.length) {
+    throw new Error(
+      `Production authentication/database configuration is incomplete: ${missing.join(", ")}. Configure the V2 environment before serving traffic.`,
+    );
+  }
+}
+
 // Static broker OAuth endpoints (skip OIDC discovery on every sign-in / callback).
 // Discovery would cost an extra network hop to the broker before the popup can
 // even redirect to Google/X — the live-preview popup felt stuck on the app for
