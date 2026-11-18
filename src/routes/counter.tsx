@@ -1,0 +1,795 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
+import { useRefresh } from "@/lib/use-refresh";
+import { PageHeader } from "@/components/page-header";
+import { Button } from "@/components/ui/button";
+import { ResultDialog, type Result } from "@/components/result-dialog";
+import { addAdvance, addCustomerMove, addServiceEntry, advanceDesk, customerCreditDesk, giveAdvanceService, removeServiceEntry, serviceDay, updateServiceEntry, type OpenAdvance, type OpenCredit, type ServiceLine } from "@/lib/centre.functions";
+import { inr } from "@/lib/format";
+import { pullSharedCloses } from "@/lib/ledger/share";
+import { useLedger } from "@/lib/ledger/store";
+import { useTodayKey } from "@/lib/use-today";
+
+const SERVICES = ["Aadhaar", "Certificate", "E-district", "PSC", "Passport", "PAN", "Ration card", "Utility bill", "Photocopy"];
+
+export const Route = createFileRoute("/counter")({
+  component: CounterPage,
+});
+
+function CounterPage() {
+  const today = useTodayKey();
+  const book = useLedger();
+  const [date, setDate] = useState(today || "");
+  const [role, setRole] = useState<"admin" | "employee" | "closer">("employee");
+  const [total, setTotal] = useState(0);
+  const [lines, setLines] = useState<ServiceLine[]>([]);
+  const [closed, setClosed] = useState(false);
+  const [service, setService] = useState("");
+  const [customer, setCustomer] = useState("");
+  const [mobile, setMobile] = useState("");
+  const [amount, setAmount] = useState("");
+  const [personalGpay, setPersonalGpay] = useState(false);
+  const [department, setDepartment] = useState("");
+  const [payMode, setPayMode] = useState<"cash" | "gpay" | "mixed">("cash");
+  const [cashPart, setCashPart] = useState("");
+  const [notice, setNotice] = useState("");
+  const [result, setResult] = useState<Result | null>(null);
+  const [pending, setPending] = useState(false);
+  const [picked, setPicked] = useState("");
+  const [editing, setEditing] = useState<ServiceLine | null>(null);
+  const [panel, setPanel] = useState<"live" | "credit" | "advance">("live");
+  const [showCustomers, setShowCustomers] = useState(false);
+  const serviceRef = useRef<HTMLInputElement>(null);
+  const seen = useRef(0);
+  const day = date || today || "";
+
+  useEffect(() => {
+    if (today) setDate((current) => current || today);
+  }, [today]);
+
+  const showDay = (seq: number, next: { role: "admin" | "employee" | "closer"; total: number; lines: ServiceLine[]; closed?: boolean }) => {
+    if (seq !== seen.current) return;
+    setRole(next.role);
+    setTotal(next.total);
+    setLines(next.lines);
+    setClosed(Boolean(next.closed));
+  };
+
+  const reload = () => {
+    const seq = ++seen.current;
+    return serviceDay({ data: day || today }).then((next) => {
+      showDay(seq, next);
+      return pullSharedCloses();
+    });
+  };
+
+  useRefresh(() => {
+    if (!day) return;
+    const seq = ++seen.current;
+    return serviceDay({ data: day })
+      .then((next) => showDay(seq, next))
+      .catch((error: unknown) => {
+        if (seq === seen.current) setNotice(error instanceof Error ? error.message : "The counter did not open.");
+      });
+  }, 15000, [day]);
+
+  const save = () => {
+    setPending(true);
+    setNotice("");
+    void addServiceEntry({
+      data: {
+        service,
+        customer,
+        mobile,
+        amount: Number(amount),
+        personalGpay,
+        department: personalGpay ? Number(department || 0) : 0,
+        bankDepartment: 0,
+        payMode,
+        cashPart: payMode === "mixed" ? Number(cashPart || 0) : 0,
+      },
+    })
+      .then(() => {
+        setService("");
+        setCustomer("");
+        setMobile("");
+        setAmount("");
+        setPersonalGpay(false);
+        setDepartment("");
+        setPayMode("cash");
+        setCashPart("");
+        setNotice("");
+        setEditing(null);
+        setResult({ ok: true, message: "Charge successfully saved." });
+        serviceRef.current?.focus();
+        return reload();
+      })
+      .catch((error: unknown) => {
+        setResult({ ok: false, message: error instanceof Error ? error.message : "Charge not saved." });
+      })
+      .finally(() => setPending(false));
+  };
+
+  const byStaff = new Map<string, number>();
+  for (const line of lines) byStaff.set(line.staff, (byStaff.get(line.staff) ?? 0) + line.amount);
+  const names = new Set(book.employees.map((employee) => employee.name.trim().toLowerCase()));
+  const unmatched = [...byStaff.keys()].filter((name) => !names.has(name.trim().toLowerCase()));
+  const gpayLines = lines.filter((line) => line.personalGpay);
+  const gpayTotal = gpayLines.reduce((sum, line) => sum + line.amount + (line.department || 0), 0);
+  const gpayService = gpayLines.reduce((sum, line) => sum + line.amount, 0);
+  const gpayDepartment = gpayLines.reduce((sum, line) => sum + (line.department || 0), 0);
+  let cashIn = 0;
+  let gpayIn = 0;
+  for (const line of lines) {
+    const part = received(line);
+    cashIn += part.cash;
+    gpayIn += part.gpay;
+  }
+
+  return (
+    <div>
+      <PageHeader
+        kicker="COUNTER"
+        title={role === "employee" ? "Service charge" : "Counter"}
+        actions={
+          role === "employee" ? null : (
+            <input
+              type="date"
+              aria-label="Counter date"
+              className="h-11 rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent"
+              value={day}
+              onChange={(event) => {
+                if (event.target.value) setDate(event.target.value);
+              }}
+            />
+          )
+        }
+      />
+
+      {role === "employee" ? (
+        <section className="rounded-xl border border-line bg-surface p-5">
+          <p className="text-xs font-semibold tracking-widest text-faint">YOUR TOTAL TODAY</p>
+          <p className="mt-1 font-display text-5xl tabular-nums">{inr(total)}</p>
+          <p className="mt-2 text-base tabular-nums">Cash {inr(cashIn)} · GPay {inr(gpayIn)}</p>
+        </section>
+      ) : (
+        <section className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-xl border border-line bg-surface p-5">
+            <p className="text-xs font-semibold tracking-widest text-faint">{day === today ? "ENTERED TODAY" : "ENTERED"}</p>
+            <p className="mt-1 font-display text-5xl tabular-nums">{inr(total)}</p>
+            <p className="mt-2 text-base tabular-nums">Cash {inr(cashIn)} · GPay {inr(gpayIn)}</p>
+          </div>
+          <div className="rounded-xl border border-line bg-surface p-5">
+            <p className="text-xs font-semibold tracking-widest text-faint">CUSTOMERS</p>
+            <p className="mt-1 font-display text-5xl tabular-nums">{lines.length}</p>
+          </div>
+        </section>
+      )}
+      {gpayLines.length > 0 ? (
+        <p className="mt-3 text-base tabular-nums">
+          Paid to personal number (9995080431) {inr(gpayTotal)} · Service {inr(gpayService)} · Department {inr(gpayDepartment)}
+        </p>
+      ) : null}
+      {role === "admin" && unmatched.length > 0 ? (
+        <p className="mt-2 text-sm text-warn">
+          {unmatched.join(", ")} is not a staff name, so that amount is in the centre total only. Use the same name as on Salary.
+        </p>
+      ) : null}
+
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        {(
+          [
+            ["live", "Live"],
+            ["credit", "Credit"],
+            ["advance", "Advances"],
+          ] as const
+        ).map(([id, label]) => (
+          <Button key={id} type="button" className="min-h-12" variant={panel === id ? "primary" : "secondary"} onClick={() => setPanel(id)}>
+            {label}
+          </Button>
+        ))}
+      </div>
+
+      {panel === "live" && role === "employee" && closed ? (
+        <section className="mt-4 rounded-xl border border-line bg-surface p-5">
+          <h2 className="font-display text-2xl">Day closed</h2>
+          <p className="mt-1 text-sm text-muted">No more charges can be entered today. Tomorrow starts fresh.</p>
+        </section>
+      ) : panel === "live" && (role === "employee" || (role === "admin" && day === today)) ? (
+        <form
+          className="mt-4 grid gap-2 rounded-xl border border-line bg-surface p-4 sm:grid-cols-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            save();
+          }}
+        >
+          <input
+            ref={serviceRef}
+            list="akshaya-services"
+            aria-label="Service"
+            placeholder="Service"
+            autoFocus
+            className="h-12 w-full rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent"
+            value={service}
+            onChange={(event) => setService(event.target.value)}
+          />
+          <datalist id="akshaya-services">
+            {SERVICES.map((item) => (
+              <option key={item} value={item} />
+            ))}
+          </datalist>
+          <input
+            aria-label="Customer name"
+            placeholder="Customer"
+            className="h-12 w-full rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent"
+            value={customer}
+            onChange={(event) => setCustomer(event.target.value)}
+          />
+          <input
+            aria-label="Mobile"
+            placeholder="Mobile"
+            inputMode="numeric"
+            className="h-12 w-full rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent"
+            value={mobile}
+            onChange={(event) => setMobile(event.target.value)}
+          />
+          <input
+            aria-label="Service charge"
+            placeholder="Service charge"
+            inputMode="numeric"
+            className="h-12 w-full rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent"
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+          />
+          <div className="sm:col-span-2">
+            <PayModeButtons
+              mode={personalGpay ? "gpay" : payMode}
+              onChange={(mode) => {
+                setPayMode(mode);
+                if (mode !== "gpay") {
+                  setPersonalGpay(false);
+                  setDepartment("");
+                }
+              }}
+            />
+            {payMode === "mixed" && !personalGpay ? (
+              <label className="mt-2 block text-sm">
+                <span className="mb-1 block text-muted">Cash received. The rest is GPay.</span>
+                <input
+                  inputMode="numeric"
+                  className="h-11 w-full rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent sm:max-w-xs"
+                  value={cashPart}
+                  onChange={(event) => setCashPart(event.target.value.replace(/[^\d]/g, "").slice(0, 7))}
+                />
+              </label>
+            ) : null}
+          </div>
+          <label className="flex min-h-11 items-center gap-2 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={personalGpay}
+              onChange={(event) => {
+                if (event.target.checked) {
+                  setPayMode("gpay");
+                  setPersonalGpay(true);
+                } else {
+                  setPersonalGpay(false);
+                  setDepartment("");
+                }
+              }}
+            />
+            Paid to personal number (9995080431)
+          </label>
+          {personalGpay ? (
+            <label className="block text-sm sm:col-span-2">
+              <input
+                inputMode="numeric"
+                aria-label="Department payment"
+                placeholder="Department payment"
+                className="h-12 w-full rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent sm:max-w-xs"
+                value={department}
+                onChange={(event) => setDepartment(event.target.value.replace(/[^\d]/g, "").slice(0, 7))}
+              />
+              <span className="mt-1 block text-sm tabular-nums">On the phone {inr(Number(amount || 0) + Number(department || 0))}</span>
+            </label>
+          ) : null}
+          <div className="sm:col-span-2">
+            <Button type="submit" className="min-h-12 w-full" disabled={pending}>
+              {pending ? "Saving…" : "Add charge"}
+            </Button>
+          </div>
+        </form>
+      ) : panel === "live" && role === "admin" ? (
+        <p className="mt-4 text-sm text-muted">Open today to enter a charge. This date is only for viewing.</p>
+      ) : null}
+      {notice ? <p className="mt-3 text-sm text-muted">{notice}</p> : null}
+
+      {panel === "credit" ? <CounterCredit month={(day || today).slice(0, 7)} onResult={setResult} /> : null}
+      {panel === "advance" ? <CounterAdvance onResult={setResult} /> : null}
+
+      <div className="mt-4">
+        <Button type="button" className="min-h-12" variant={showCustomers ? "primary" : "secondary"} onClick={() => setShowCustomers((open) => !open)}>
+          Today's customers
+        </Button>
+      </div>
+      {showCustomers && role === "employee" ? (
+        <section className="mt-4 rounded-xl border border-line bg-surface p-5">
+          <h2 className="font-display text-2xl">Today's customers</h2>
+          {lines.length === 0 ? <p className="mt-2 text-sm text-muted">Nothing entered for this day.</p> : null}
+          <CustomerLines
+            lines={lines}
+            editing={editing}
+            onEdit={setEditing}
+            onResult={(next) => {
+              setResult(next);
+              setEditing(null);
+              void reload();
+            }}
+            canDelete={false}
+            locked={closed}
+          />
+        </section>
+      ) : null}
+      {showCustomers && role !== "employee" ? (
+        <section className="mt-4 rounded-xl border border-line bg-surface p-5">
+          <h2 className="font-display text-2xl">Today's customers</h2>
+          {byStaff.size === 0 ? <p className="mt-2 text-sm text-muted">Nothing entered for this day.</p> : null}
+          <ul className="mt-3 max-w-xl divide-y divide-line">
+            {[...byStaff.entries()].map(([name, value]) => {
+              const count = lines.filter((line) => line.staff === name).length;
+              const open = picked === name;
+              return (
+                <li key={name}>
+                  <button
+                    type="button"
+                    className="grid w-full grid-cols-[minmax(0,1fr)_3.5rem_7.5rem] items-baseline gap-4 py-3 text-left"
+                    onClick={() => {
+                      setPicked(open ? "" : name);
+                      setEditing(null);
+                    }}
+                  >
+                    <span className="text-base font-medium">{name}</span>
+                    <span className="text-right text-base tabular-nums text-muted">{count}</span>
+                    <span className="text-right text-lg font-medium tabular-nums">{inr(value)}</span>
+                  </button>
+                  {open ? (
+                    <CustomerLines
+                      lines={lines.filter((line) => line.staff === name)}
+                      editing={editing}
+                      onEdit={setEditing}
+                      onResult={(next) => {
+                        setResult(next);
+                        setEditing(null);
+                        void reload();
+                      }}
+                      canDelete={role === "admin"}
+                      locked={role !== "admin" && closed}
+                    />
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+      <ResultDialog result={result} onClose={() => setResult(null)} />
+    </div>
+  );
+}
+
+function received(line: ServiceLine): { cash: number; gpay: number } {
+  if (line.payMode === "credit" || line.payMode === "advance") return { cash: 0, gpay: 0 };
+  if (line.personalGpay || line.payMode === "gpay") return { cash: 0, gpay: line.amount };
+  if (line.payMode === "mixed") {
+    const cash = Math.min(line.amount, Math.max(0, Number(line.cashPart) || 0));
+    return { cash, gpay: line.amount - cash };
+  }
+  return { cash: line.amount, gpay: 0 };
+}
+
+function modeWord(line: ServiceLine): string {
+  if (line.payMode === "credit") return "Credit";
+  if (line.payMode === "advance") return "Advance";
+  if (line.personalGpay) return "GPay";
+  if (line.payMode === "gpay") return "GPay";
+  if (line.payMode === "mixed") return `Mixed, cash ${inr(received(line).cash)}`;
+  return "Cash";
+}
+
+function PayModeButtons({ mode, onChange }: { mode: "cash" | "gpay" | "mixed"; onChange: (mode: "cash" | "gpay" | "mixed") => void }) {
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {(
+        [
+          ["cash", "Cash"],
+          ["gpay", "GPay"],
+          ["mixed", "Mixed"],
+        ] as const
+      ).map(([id, label]) => (
+        <Button key={id} type="button" className="min-h-11" variant={mode === id ? "primary" : "secondary"} onClick={() => onChange(id)}>
+          {label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+function CustomerLines({
+  lines,
+  editing,
+  onEdit,
+  onResult,
+  canDelete,
+  locked = false,
+}: {
+  lines: ServiceLine[];
+  editing: ServiceLine | null;
+  onEdit: (line: ServiceLine | null) => void;
+  onResult: (result: Result) => void;
+  canDelete: boolean;
+  locked?: boolean;
+}) {
+  return (
+    <ul className="mb-2 grid gap-2">
+      {lines.map((line) =>
+        editing?.id === line.id ? (
+          <EditCharge key={line.id} line={line} onClose={() => onEdit(null)} onResult={onResult} />
+        ) : (
+          <li key={line.id} className="rounded-lg border border-line px-3 py-2 text-sm">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              <div className="min-w-48">
+                <p className="font-medium">{line.customer}</p>
+                <p className="text-xs text-faint">
+                  {line.service}
+                  {line.mobile ? ` · ${line.mobile}` : ""}
+                  {` · ${modeWord(line)}`}
+                  {line.personalGpay
+                    ? ` · Paid to 9995080431 · total ${inr(line.amount + (line.department || 0))} · service ${inr(line.amount)} · department ${inr(line.department || 0)}`
+                    : ""}
+                </p>
+              </div>
+              <span className="text-lg font-medium tabular-nums">{inr(line.amount)}</span>
+              <div className="ml-auto flex items-center gap-2">
+                {locked ? null : (
+                  <Button size="sm" variant="secondary" onClick={() => onEdit(line)}>
+                    Edit
+                  </Button>
+                )}
+                {canDelete ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      void removeServiceEntry({ data: line.id })
+                        .then(() => onResult({ ok: true, message: "Charge successfully deleted." }))
+                        .catch((error: unknown) => onResult({ ok: false, message: error instanceof Error ? error.message : "Charge not deleted." }));
+                    }}
+                  >
+                    Delete
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          </li>
+        ),
+      )}
+    </ul>
+  );
+}
+
+function EditCharge({ line, onClose, onResult }: { line: ServiceLine; onClose: () => void; onResult: (result: Result) => void }) {
+  const [service, setService] = useState(line.service);
+  const [customer, setCustomer] = useState(line.customer);
+  const [mobile, setMobile] = useState(line.mobile);
+  const [amount, setAmount] = useState(String(line.amount));
+  const [personalGpay, setPersonalGpay] = useState(Boolean(line.personalGpay));
+  const [department, setDepartment] = useState(line.department ? String(line.department) : "");
+  const [payMode, setPayMode] = useState<"cash" | "gpay" | "mixed">(line.personalGpay ? "gpay" : line.payMode === "mixed" || line.payMode === "gpay" ? line.payMode : "cash");
+  const [cashPart, setCashPart] = useState(line.payMode === "mixed" && line.cashPart ? String(line.cashPart) : "");
+  const [pending, setPending] = useState(false);
+  return (
+    <li className="rounded-lg border border-line p-3">
+      <form
+        className="grid gap-2 sm:grid-cols-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setPending(true);
+          void updateServiceEntry({
+            data: {
+              id: line.id,
+              service,
+              customer,
+              mobile,
+              amount: Number(amount),
+              personalGpay,
+              department: personalGpay ? Number(department || 0) : 0,
+              bankDepartment: line.bankDepartment || 0,
+              payMode,
+              cashPart: payMode === "mixed" ? Number(cashPart || 0) : 0,
+            },
+          })
+            .then(() => onResult({ ok: true, message: "Charge successfully updated." }))
+            .catch((caught: unknown) => {
+              onResult({ ok: false, message: caught instanceof Error ? caught.message : "Charge not saved." });
+              setPending(false);
+            });
+        }}
+      >
+        <input className="h-11 rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent" value={service} onChange={(event) => setService(event.target.value)} aria-label="Service" />
+        <input className="h-11 rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent" value={customer} onChange={(event) => setCustomer(event.target.value)} aria-label="Customer" />
+        <input className="h-11 rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent" value={mobile} onChange={(event) => setMobile(event.target.value)} aria-label="Mobile" />
+        <input className="h-11 rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent" value={amount} onChange={(event) => setAmount(event.target.value)} aria-label="Service charge" inputMode="numeric" />
+        <div className="sm:col-span-2">
+          <PayModeButtons
+            mode={personalGpay ? "gpay" : payMode}
+            onChange={(mode) => {
+              setPayMode(mode);
+              if (mode !== "gpay") {
+                setPersonalGpay(false);
+                setDepartment("");
+              }
+            }}
+          />
+          {payMode === "mixed" && !personalGpay ? (
+            <label className="mt-2 block text-sm">
+              <span className="mb-1 block text-muted">Cash received. The rest is GPay.</span>
+              <input
+                inputMode="numeric"
+                aria-label="Cash received"
+                className="h-11 w-full rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent sm:max-w-xs"
+                value={cashPart}
+                onChange={(event) => setCashPart(event.target.value.replace(/[^\d]/g, "").slice(0, 7))}
+              />
+            </label>
+          ) : null}
+        </div>
+        <label className="flex min-h-11 items-center gap-2 text-sm sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={personalGpay}
+            onChange={(event) => {
+              if (event.target.checked) {
+                setPayMode("gpay");
+                setPersonalGpay(true);
+              } else {
+                setPersonalGpay(false);
+                setDepartment("");
+              }
+            }}
+          />
+          Paid to personal number (9995080431)
+        </label>
+        {personalGpay ? (
+          <label className="block text-sm sm:col-span-2">
+            <span className="mb-1 block text-muted">Department payment</span>
+            <input
+              inputMode="numeric"
+              aria-label="Department payment"
+              className="h-11 w-full rounded-sm border border-line bg-bg px-3 text-base outline-none focus:border-accent sm:max-w-xs"
+              value={department}
+              onChange={(event) => setDepartment(event.target.value.replace(/[^\d]/g, "").slice(0, 7))}
+            />
+          </label>
+        ) : null}
+        <div className="flex gap-2 sm:col-span-2">
+          <Button type="submit" disabled={pending}>{pending ? "Saving…" : "Save"}</Button>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+        </div>
+      </form>
+    </li>
+  );
+}
+
+function CounterCredit({ month, onResult }: { month: string; onResult: (result: Result) => void }) {
+  const [open, setOpen] = useState<OpenCredit[]>([]);
+  const [given, setGiven] = useState(0);
+  const [received, setReceived] = useState(0);
+  const [customer, setCustomer] = useState("");
+  const [mobile, setMobile] = useState("");
+  const [serviceCharge, setServiceCharge] = useState("");
+  const [department, setDepartment] = useState("");
+  const [payFor, setPayFor] = useState("");
+  const [payAmount, setPayAmount] = useState("");
+  const [pending, setPending] = useState(false);
+
+  const load = () => {
+    if (!month) return;
+    void customerCreditDesk({ data: month })
+      .then((book) => {
+        setOpen(book.open);
+        setGiven(book.credit);
+        setReceived(book.debit);
+      })
+      .catch((error: unknown) => onResult({ ok: false, message: error instanceof Error ? error.message : "Credit did not open." }));
+  };
+  useRefresh(load, 15000, [month]);
+
+  return (
+    <>
+      <section className="mt-4 rounded-xl border border-line bg-surface p-5">
+        <h2 className="font-display text-2xl">Still unpaid</h2>
+        {open.length === 0 ? <p className="mt-3 text-sm text-muted">No open credit.</p> : null}
+        <ul className="mt-2 divide-y divide-line">
+          {open.map((line) => (
+            <li key={`${line.customer}-${line.mobile}`} className="py-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span>
+                  {line.customer}
+                  <span className="mt-0.5 block text-xs text-faint">{line.mobile || "No mobile"} · {inr(line.balance)}</span>
+                </span>
+                <Button size="sm" variant="secondary" onClick={() => setPayFor(payFor === line.customer ? "" : line.customer)}>Receive</Button>
+              </div>
+              {payFor === line.customer ? (
+                <form
+                  className="mt-2 flex gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void addCustomerMove({ data: { kind: "debit", customer: line.customer, mobile: line.mobile, amount: Number(payAmount) } })
+                      .then(() => {
+                        setPayAmount("");
+                        setPayFor("");
+                        onResult({ ok: true, message: "Credit repayment saved." });
+                        load();
+                      })
+                      .catch((error: unknown) => onResult({ ok: false, message: error instanceof Error ? error.message : "Repayment was not saved." }));
+                  }}
+                >
+                  <input aria-label="Repay amount" inputMode="numeric" className="h-11 flex-1 rounded-sm border border-line bg-bg px-3" value={payAmount} onChange={(event) => setPayAmount(event.target.value)} />
+                  <Button type="submit">Save</Button>
+                </form>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </section>
+      <div className="mt-4 grid items-start gap-4 sm:grid-cols-2">
+        <section className="rounded-xl border border-line border-l-4 border-l-bad bg-surface p-5">
+          <h2 className="font-display text-2xl">Credit given</h2>
+          <p className="mt-1 font-display text-3xl tabular-nums">{inr(given)}</p>
+          <form
+            className="mt-3 grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setPending(true);
+              void addCustomerMove({
+                data: {
+                  kind: "credit",
+                  customer,
+                  mobile,
+                  amount: Number(serviceCharge || 0) + Number(department || 0),
+                  serviceCharge: Number(serviceCharge || 0),
+                  department: Number(department || 0),
+                },
+              })
+                .then(() => {
+                  setCustomer("");
+                  setMobile("");
+                  setServiceCharge("");
+                  setDepartment("");
+                  onResult({ ok: true, message: "Credit saved. The service charge is in today's collection." });
+                  load();
+                })
+                .catch((error: unknown) => onResult({ ok: false, message: error instanceof Error ? error.message : "Credit was not saved." }))
+                .finally(() => setPending(false));
+            }}
+          >
+            <input aria-label="Credit customer" className="h-11 rounded-sm border border-line bg-bg px-3" placeholder="Customer" value={customer} onChange={(event) => setCustomer(event.target.value)} />
+            <input aria-label="Credit mobile" inputMode="numeric" className="h-11 rounded-sm border border-line bg-bg px-3" placeholder="Mobile" value={mobile} onChange={(event) => setMobile(event.target.value)} />
+            <input aria-label="Credit service charge" inputMode="numeric" className="h-11 rounded-sm border border-line bg-bg px-3" placeholder="Service charge" value={serviceCharge} onChange={(event) => setServiceCharge(event.target.value.replace(/[^\d]/g, "").slice(0, 7))} />
+            <input aria-label="Credit department payment" inputMode="numeric" className="h-11 rounded-sm border border-line bg-bg px-3" placeholder="Department payment" value={department} onChange={(event) => setDepartment(event.target.value.replace(/[^\d]/g, "").slice(0, 7))} />
+            <p className="text-sm text-muted">Credit {inr(Number(serviceCharge || 0) + Number(department || 0))}. Do not enter this service charge again on the counter.</p>
+            <Button type="submit" disabled={pending}>Add credit</Button>
+          </form>
+        </section>
+        <section className="rounded-xl border border-line border-l-4 border-l-accent bg-surface p-5">
+          <h2 className="font-display text-2xl">Credit received</h2>
+          <p className="mt-1 font-display text-3xl tabular-nums">{inr(received)}</p>
+        </section>
+      </div>
+    </>
+  );
+}
+
+function CounterAdvance({ onResult }: { onResult: (result: Result) => void }) {
+  const [open, setOpen] = useState<OpenAdvance[]>([]);
+  const [customer, setCustomer] = useState("");
+  const [mobile, setMobile] = useState("");
+  const [service, setService] = useState("");
+  const [amount, setAmount] = useState("");
+  const [part, setPart] = useState<Record<string, { service: string; department: string }>>({});
+  const [pending, setPending] = useState(false);
+
+  const load = () => {
+    void advanceDesk()
+      .then((book) => setOpen(book.open))
+      .catch((error: unknown) => onResult({ ok: false, message: error instanceof Error ? error.message : "Advances did not open." }));
+  };
+  useRefresh(load, 15000, []);
+
+  return (
+    <section className="mt-4 rounded-xl border border-line bg-surface p-5">
+      <h2 className="font-display text-2xl">Advances</h2>
+      <form
+        className="mt-3 grid gap-3 sm:grid-cols-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setPending(true);
+          void addAdvance({ data: { customer, mobile, service, amount: Number(amount) } })
+            .then(() => {
+              setCustomer("");
+              setMobile("");
+              setService("");
+              setAmount("");
+              onResult({ ok: true, message: "Advance saved." });
+              load();
+            })
+            .catch((error: unknown) => onResult({ ok: false, message: error instanceof Error ? error.message : "Advance was not saved." }))
+            .finally(() => setPending(false));
+        }}
+      >
+        <input aria-label="Advance customer" className="h-11 rounded-sm border border-line bg-bg px-3" placeholder="Customer" value={customer} onChange={(event) => setCustomer(event.target.value)} />
+        <input aria-label="Advance mobile" inputMode="numeric" className="h-11 rounded-sm border border-line bg-bg px-3" placeholder="Mobile" value={mobile} onChange={(event) => setMobile(event.target.value)} />
+        <input aria-label="Advance service" className="h-11 rounded-sm border border-line bg-bg px-3" placeholder="Service" value={service} onChange={(event) => setService(event.target.value)} />
+        <input aria-label="Advance amount" inputMode="numeric" className="h-11 rounded-sm border border-line bg-bg px-3" placeholder="Amount" value={amount} onChange={(event) => setAmount(event.target.value)} />
+        <Button type="submit" disabled={pending}>Add advance</Button>
+      </form>
+      {open.length === 0 ? <p className="mt-3 text-sm text-muted">No open advance.</p> : null}
+      <ul className="mt-2 divide-y divide-line">
+        {open.map((line) => (
+          <li key={line.id} className="py-3 text-sm">
+            <div className="flex items-start justify-between gap-3">
+              <span>
+                {line.customer}
+                <span className="mt-0.5 block text-xs text-faint">{line.service} · {inr(line.amount)}</span>
+              </span>
+            </div>
+            <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+              <input
+                aria-label={`Service charge for ${line.customer}`}
+                inputMode="numeric"
+                placeholder="Service charge"
+                className="h-11 rounded-sm border border-line bg-bg px-3 text-base"
+                value={part[line.id]?.service ?? ""}
+                onChange={(event) => setPart((current) => ({ ...current, [line.id]: { service: event.target.value.replace(/[^\d]/g, "").slice(0, 7), department: current[line.id]?.department ?? "" } }))}
+              />
+              <input
+                aria-label={`Department payment for ${line.customer}`}
+                inputMode="numeric"
+                placeholder="Department payment"
+                className="h-11 rounded-sm border border-line bg-bg px-3 text-base"
+                value={part[line.id]?.department ?? ""}
+                onChange={(event) => setPart((current) => ({ ...current, [line.id]: { service: current[line.id]?.service ?? "", department: event.target.value.replace(/[^\d]/g, "").slice(0, 7) } }))}
+              />
+              <Button
+                size="sm"
+                disabled={pending}
+                onClick={() => {
+                  const serviceCharge = Number(part[line.id]?.service || 0);
+                  const department = Number(part[line.id]?.department || 0);
+                  const served = serviceCharge + department;
+                  if (!served || served > line.amount) {
+                    onResult({ ok: false, message: served > line.amount ? "That is more than the advance." : "Enter the service charge and the department payment." });
+                    return;
+                  }
+                  setPending(true);
+                  void giveAdvanceService({ data: { id: line.id, serviceCharge, department } })
+                    .then((saved) => {
+                      const rest = saved.left > 0 ? ` ${inr(saved.left)} still in advance.` : "";
+                      const wallet = department > 0 ? ` Reduce the wallet by ${inr(department)}.` : "";
+                      onResult({ ok: true, message: `Service given.${rest}${wallet} The service charge is in today's collection.` });
+                      setPart((current) => ({ ...current, [line.id]: { service: "", department: "" } }));
+                      load();
+                    })
+                    .catch((error: unknown) => onResult({ ok: false, message: error instanceof Error ? error.message : "The service was not saved." }))
+                    .finally(() => setPending(false));
+                }}
+              >
+                Service given
+              </Button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
