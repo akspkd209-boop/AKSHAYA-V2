@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { ResultDialog, type Result } from "@/components/result-dialog";
 import { authClient, storeSessionToken } from "@/lib/auth/client";
-import { rememberOwnPassword } from "@/lib/centre.functions";
 
 export function PasswordDialog({
   open,
@@ -52,7 +51,6 @@ export function PasswordDialog({
                 return;
               }
               storeSessionToken(result.data?.token);
-              void rememberOwnPassword({ data: nextPassword }).catch(() => undefined);
               setCurrentPassword("");
               setNextPassword("");
               setConfirmPassword("");

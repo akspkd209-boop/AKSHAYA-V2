@@ -183,6 +183,13 @@ async function createSql(): Promise<Sql> {
         "or a server route loader, never from client code.",
     );
   }
+  // A production server must never silently use an in-memory database. Doing so
+  // would make writes disappear between serverless instances or restarts.
+  if (process.env.NODE_ENV === "production" && dbSource !== "neon") {
+    throw new Error(
+      "DATABASE_URL is required in production. Configure the V2 Neon database before serving requests.",
+    );
+  }
   return dbSource === "neon" ? createNeonSql() : createPgliteSql();
 }
 
