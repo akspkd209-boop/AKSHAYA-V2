@@ -15,14 +15,6 @@ export type SharedBook = {
   touches: Record<string, string>;
 };
 
-const STAFF_LOGINS = [
-  { name: "Ajitha", username: "ajitha" },
-  { name: "Haseena", username: "haseena" },
-  { name: "Sheena", username: "sheena" },
-  { name: "Sajini", username: "sajini" },
-  { name: "Rubeena", username: "rubeena" },
-] as const;
-
 function temporaryPassword(): string {
   return randomBytes(18).toString("base64url");
 }
@@ -49,29 +41,7 @@ async function openStaffLogin(name: string, username: string, password: string) 
   });
   await sql`update "user" set username = ${username}, "displayUsername" = ${username} where id = ${created.id}`;
   await sql`delete from "session" where "userId" = ${created.id}`;
-   return created.id as string;
-}
-
-async function ensureStaffLogins() {
-  const { getSql } = await import("@/lib/db");
-  const sql = await getSql();
-  await ensureUsernames(sql);
-  for (const person of STAFF_LOGINS) {
-    const existing = await sql<{ id: string }>`select id from "user" where username = ${person.username} or email = ${centreEmail(person.username)} limit 1`;
-    let userId = existing[0]?.id;
-    if (!userId) {
-      try {
-        userId = await openStaffLogin(person.name, person.username, temporaryPassword());
-      } catch {
-        const again = await sql<{ id: string }>`select id from "user" where username = ${person.username} or email = ${centreEmail(person.username)} limit 1`;
-        userId = again[0]?.id;
-      }
-    }
-    if (!userId) continue;
-    const member = await sql<{ role: CentreRole }>`select role from centre_member where user_id = ${userId}`;
-    if (member[0]?.role === "admin" || member[0]?.role === "closer") continue;
-    await sql`insert into centre_member (user_id, role, name) values (${userId}, 'employee', ${person.name}) on conflict (user_id) do update set role = 'employee', name = ${person.name}`;
-  }
+  return created.id as string;
 }
 
 export const centreHasAdmin = createServerFn({ method: "GET" }).handler(async () => {
@@ -125,11 +95,8 @@ export const claimAdmin = createServerFn({ method: "POST" })
       const mine = await sql<{ role: CentreRole }>`select role from centre_member where user_id = ${context.userId}`;
       return { role: mine[0]?.role ?? null };
     }
-    try {
-      await ensureStaffLogins();
-    } catch {
-      // The first staff names can be added from Settings if this pass fails.
-    }
+    // Staff accounts are created explicitly by an admin in Settings. Never
+    // create unattended accounts with credentials nobody can securely receive.
     return { role: "admin" as const };
   });
 
