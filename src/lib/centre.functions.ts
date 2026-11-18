@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { randomBytes } from "node:crypto";
 import { authMiddleware } from "@/lib/auth/middleware";
 import type { CashClose, CentrePayout, CollectionDay, LedgerData } from "@/lib/ledger/types";
 import { PAYOUT_KINDS, withCategories } from "@/lib/ledger/types";
@@ -22,7 +23,9 @@ const STAFF_LOGINS = [
   { name: "Rubeena", username: "rubeena" },
 ] as const;
 
-export const DEFAULT_STAFF_PASSWORD = "Akshaya@1";
+function temporaryPassword(): string {
+  return randomBytes(18).toString("base64url");
+}
 
 async function openStaffLogin(name: string, username: string, password: string) {
   const { auth } = await import("@/lib/auth/server");
@@ -46,9 +49,7 @@ async function openStaffLogin(name: string, username: string, password: string) 
   });
   await sql`update "user" set username = ${username}, "displayUsername" = ${username} where id = ${created.id}`;
   await sql`delete from "session" where "userId" = ${created.id}`;
-  const { savePasswordCopy } = await import("@/lib/password-copy.server");
-  await savePasswordCopy(sql, created.id, password);
-  return created.id as string;
+   return created.id as string;
 }
 
 async function ensureStaffLogins() {
@@ -60,7 +61,7 @@ async function ensureStaffLogins() {
     let userId = existing[0]?.id;
     if (!userId) {
       try {
-        userId = await openStaffLogin(person.name, person.username, DEFAULT_STAFF_PASSWORD);
+        userId = await openStaffLogin(person.name, person.username, temporaryPassword());
       } catch {
         const again = await sql<{ id: string }>`select id from "user" where username = ${person.username} or email = ${centreEmail(person.username)} limit 1`;
         userId = again[0]?.id;
@@ -216,9 +217,8 @@ export const removeEmployeeAccount = createServerFn({ method: "POST" })
     await sql`delete from "session" where "userId" = ${userId}`;
     await sql`delete from "account" where "userId" = ${userId}`;
     await sql`delete from "user" where id = ${userId}`;
-    const { forgetPasswordCopy } = await import("@/lib/password-copy.server");
-    await forgetPasswordCopy(sql, userId);
-    return { ok: true };
+    await sql.query("delete from staff_password_copy where user_id = $1", [userId]).catch(() => []);
+     return { ok: true };
   });
 
 export const resetEmployeePassword = createServerFn({ method: "POST" })
@@ -233,48 +233,13 @@ export const resetEmployeePassword = createServerFn({ method: "POST" })
     if (rows[0]?.role !== "employee" && rows[0]?.role !== "closer") throw new Error("Only a staff or closing password can be reset.");
     const { auth } = await import("@/lib/auth/server");
     const ctx = await auth.$context;
-    const hash = await ctx.password.hash(DEFAULT_STAFF_PASSWORD);
+    const password = temporaryPassword();
+    const hash = await ctx.password.hash(password);
     const updated = await sql`update "account" set password = ${hash} where "userId" = ${userId} and "providerId" = 'credential' returning id`;
     if (updated.length === 0) throw new Error("That account has no password to reset.");
     await sql`delete from "session" where "userId" = ${userId}`;
-    const { savePasswordCopy } = await import("@/lib/password-copy.server");
-    await savePasswordCopy(sql, userId, DEFAULT_STAFF_PASSWORD);
-    return { ok: true, password: DEFAULT_STAFF_PASSWORD };
-  });
-
-export const rememberOwnPassword = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator((password: string) => {
-    const next = password.slice(0, 80);
-    if (next.length < 8) throw new Error("Password needs at least 8 characters.");
-    return next;
-  })
-  .handler(async ({ context, data: password }) => {
-    await requireMember(context.userId);
-    const { getSql } = await import("@/lib/db");
-    const sql = await getSql();
-    const { auth } = await import("@/lib/auth/server");
-    const ctx = await auth.$context;
-    const accounts = await sql<{ password: string | null }>`select password from "account" where "userId" = ${context.userId} and "providerId" = 'credential'`;
-    const hash = accounts[0]?.password;
-    if (!hash || !(await ctx.password.verify({ hash, password }))) throw new Error("Password was not saved.");
-    const { savePasswordCopy } = await import("@/lib/password-copy.server");
-    await savePasswordCopy(sql, context.userId, password);
-    return { ok: true };
-  });
-
-export const revealStaffPassword = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .validator((userId: string) => userId.trim())
-  .handler(async ({ context, data: userId }) => {
-    await requireAdmin(context.userId);
-    const { getSql } = await import("@/lib/db");
-    const sql = await getSql();
-    const rows = await sql<{ role: CentreRole }>`select role from centre_member where user_id = ${userId}`;
-    if (rows[0]?.role !== "employee" && rows[0]?.role !== "closer") throw new Error("Only a staff or closing password can be shown.");
-    const { readPasswordCopy } = await import("@/lib/password-copy.server");
-    const password = await readPasswordCopy(sql, userId);
-    return { password };
+    await sql.query("delete from staff_password_copy where user_id = $1", [userId]).catch(() => []);
+    return { ok: true, password };
   });
 
 function optionalMobile(value: string): string {
