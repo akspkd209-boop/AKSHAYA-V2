@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { createEmployeeAccount, changeAdminUsername, listAccounts, removeEmployeeAccount, resetEmployeePassword, revealStaffPassword, type CentreRole } from "@/lib/centre.functions";
+import { createEmployeeAccount, changeAdminUsername, listAccounts, removeEmployeeAccount, resetEmployeePassword, type CentreRole } from "@/lib/centre.functions";
 import { authClient, storeSessionToken } from "@/lib/auth/client";
 import { ResultDialog, type Result } from "@/components/result-dialog";
 import { useLedger } from "@/lib/ledger/store";
@@ -71,7 +71,7 @@ export function SettingsDialog({
     >
       <div className="rounded-lg border border-line p-3">
         <p className="text-sm font-medium">User accounts</p>
-        <p className="mt-1 text-xs text-muted">Press and hold Show to see a staff or closing password. A password chosen before this update appears after they change it, or after you set it back to Akshaya@1.</p>
+        <p className="mt-1 text-xs text-muted">Staff passwords are never displayed or stored in readable form. Reset creates a new temporary password; share it privately and ask the staff member to change it.</p>
         {accounts.length === 0 ? <p className="mt-3 text-sm text-muted">No accounts loaded yet.</p> : null}
         <ul className="mt-3 divide-y divide-line">
           {accounts.map((account) => (
@@ -92,7 +92,7 @@ export function SettingsDialog({
                         void resetEmployeePassword({ data: account.userId })
                           .then(() => {
                             setResetFor("");
-                            setNotice(`${account.name} can sign in with username ${account.username} and password Akshaya@1.`);
+                            setNotice(`${account.name} temporary password: ${reset.password}. Share it privately and ask them to change it after signing in.`);
                           })
                           .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not reset that password."));
                       }}
@@ -105,9 +105,8 @@ export function SettingsDialog({
                   </span>
                 ) : (
                   <span className="flex gap-2">
-                    <HoldPassword userId={account.userId} />
                     <Button size="sm" variant="ghost" onClick={() => setResetFor(account.userId)}>
-                      Set to Akshaya@1
+                      Reset password
                     </Button>
                     <Button
                       size="sm"
@@ -351,30 +350,3 @@ export function SettingsDialog({
   );
 }
 
-function HoldPassword({ userId }: { userId: string }) {
-  const [holding, setHolding] = useState(false);
-  const [password, setPassword] = useState<string | null>(null);
-  const down = () => {
-    setHolding(true);
-    if (password !== null) return;
-    void revealStaffPassword({ data: userId })
-      .then((found) => setPassword(found.password || ""))
-      .catch(() => setPassword(""));
-  };
-  return (
-    <button
-      type="button"
-      className="min-h-8 max-w-40 truncate rounded-sm px-2 text-sm text-muted hover:bg-surface-2"
-      onMouseDown={down}
-      onMouseUp={() => setHolding(false)}
-      onMouseLeave={() => setHolding(false)}
-      onTouchStart={(event) => {
-        event.preventDefault();
-        down();
-      }}
-      onTouchEnd={() => setHolding(false)}
-    >
-      {holding ? (password === null ? "…" : password || "Not saved yet") : "Show"}
-    </button>
-  );
-}
